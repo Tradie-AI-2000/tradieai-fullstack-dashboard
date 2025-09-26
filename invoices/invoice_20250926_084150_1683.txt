@@ -1,0 +1,14 @@
+--- INVOICE ---
+
+Invoice ID: 20250926_084150_1683
+Date: 2025-09-26
+
+Bill To:
+Cyberdyne Systems
+
+--------------------
+Description         Amount
+--------------------
+Consulting Services   $10,000.00
+--------------------
+TOTAL:              $10,000.00
