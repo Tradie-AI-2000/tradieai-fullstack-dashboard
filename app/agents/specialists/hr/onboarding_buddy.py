@@ -17,7 +17,7 @@ from google.adk.agents import LlmAgent
 def get_onboarding_info(new_hire_name: str) -> str:
     """Gets onboarding information for a new hire from a file."""
     try:
-        with open("onboarding/new_hire_guide.md", "r") as f:
+        with open("onboarding/new_hire_guide.md", "r", encoding="utf-8") as f:
             guide_content = f.read()
         return f"Welcome, {new_hire_name}! Here is some information to get you started:\n\n{guide_content}"
     except FileNotFoundError:

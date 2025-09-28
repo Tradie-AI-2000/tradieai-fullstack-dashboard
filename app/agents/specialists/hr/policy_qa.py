@@ -26,7 +26,7 @@ def find_policy_document(policy_name: str) -> str:
         return f"Could not find any policy document matching '{policy_name}'."
 
     try:
-        with open(found_files[0], "r") as f:
+        with open(found_files[0], "r", encoding="utf-8") as f:
             return f.read()
     except IOError as e:
         return f"Error: Failed to read policy document {found_files[0]}. Reason: {e}"
