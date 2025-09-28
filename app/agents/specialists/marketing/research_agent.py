@@ -53,7 +53,7 @@ plan_generator = LlmAgent(
     model=config.worker_model,
     name="plan_generator",
     description="Generates or refines a multi-step research plan.",
-    tools=[google_search],
+    tools=[],
 )
 
 research_pipeline = SequentialAgent(
@@ -70,7 +70,7 @@ research_pipeline = SequentialAgent(
             model=config.worker_model,
             name="section_researcher",
             instruction="You are a highly capable research and synthesis agent...",
-            tools=[google_search],
+            tools=[],
             output_key="section_research_findings",
             after_agent_callback=collect_research_sources_callback,
         ),
@@ -90,7 +90,7 @@ research_pipeline = SequentialAgent(
                     model=config.worker_model,
                     name="enhanced_search_executor",
                     instruction="You are a specialist researcher executing a refinement pass...",
-                    tools=[google_search],
+                    tools=[],
                     output_key="section_research_findings",
                     after_agent_callback=collect_research_sources_callback,
                 ),
