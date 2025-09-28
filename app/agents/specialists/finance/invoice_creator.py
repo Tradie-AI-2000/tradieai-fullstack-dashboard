@@ -39,7 +39,7 @@ def create_invoice(customer_name: str, amount: float) -> str:
     )
 
     try:
-        with open(file_path, "w") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"Successfully created invoice. It is saved at: {file_path}"
     except IOError as e:
