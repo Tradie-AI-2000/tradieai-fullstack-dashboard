@@ -13,15 +13,28 @@
 # limitations under the License.
 
 from google.adk.agents import LlmAgent
+from google.adk.tools.agent_tool import AgentTool
+
+from app.agents.directors import (
+    Marketing_Director_Agent,
+    Finance_Director_Agent,
+    HR_Director_Agent,
+    Customer_Service_Director_Agent,
+)
 
 # --- Level 1: The Root Orchestrator Agent ---
 
 main_coordinator_agent = LlmAgent(
     name="main_coordinator_agent",
-    model="gemini-2.5-flash", # Using flash for faster response and simplicity
-    description="A simple test agent.",
-    instruction="Hello! I am a simple test agent and I am working correctly.",
-    sub_agents=[] # No sub-agents for this test
+    model="gemini-2.5-pro",
+    description="The main coordinator for the entire agent system. It delegates tasks to the appropriate director-level agent.",
+    instruction='''You are the main coordinator of a company. Your ONLY job is to understand the user\'s request and delegate the entire task by transferring control to the single most appropriate Director agent.\n\n- For any marketing, research, or analysis tasks, transfer control to the `Marketing_Director_Agent`.\n- For any finance or invoice tasks, transfer control to the `Finance_Director_Agent`.\n- For any HR related tasks, transfer control to the `HR_Director_Agent`.\n- For any customer service related tasks, transfer control to the `Customer_Service_Director_Agent`.\n\nIf the request is ambiguous, ask for clarification. Do not perform any other actions.\n''',
+    sub_agents=[
+        Marketing_Director_Agent,
+        Finance_Director_Agent,
+        HR_Director_Agent,
+        Customer_Service_Director_Agent
+    ]
 )
 
 
