@@ -25,14 +25,6 @@ from google.adk.tools.agent_tool import AgentTool
 from google.genai import types as genai_types
 
 from app.config import config
-from app.agents.specialists.marketing.research_agent_entities import Feedback
-
-# This is a placeholder for the original callbacks. In a real scenario, you would move them to a separate file.
-def collect_research_sources_callback(callback_context: CallbackContext) -> None:
-    pass
-
-def citation_replacement_callback(callback_context: CallbackContext) -> genai_types.Content:
-    return genai_types.Content()
 
 class EscalationChecker(BaseAgent):
     """Checks research evaluation and escalates to stop the loop if grade is 'pass'."""
@@ -72,7 +64,6 @@ research_pipeline = SequentialAgent(
             instruction="You are a highly capable research and synthesis agent...",
             tools=[google_search],
             output_key="section_research_findings",
-            after_agent_callback=collect_research_sources_callback,
         ),
         LoopAgent(
             name="iterative_refinement_loop",
@@ -82,7 +73,6 @@ research_pipeline = SequentialAgent(
                     model=config.critic_model,
                     name="research_evaluator",
                     instruction="You are a meticulous quality assurance analyst...",
-                    output_schema=Feedback,
                     output_key="research_evaluation",
                 ),
                 EscalationChecker(name="escalation_checker"),
@@ -92,7 +82,6 @@ research_pipeline = SequentialAgent(
                     instruction="You are a specialist researcher executing a refinement pass...",
                     tools=[google_search],
                     output_key="section_research_findings",
-                    after_agent_callback=collect_research_sources_callback,
                 ),
             ],
         ),
@@ -101,7 +90,6 @@ research_pipeline = SequentialAgent(
             name="report_composer_with_citations",
             instruction="Transform the provided data into a polished, professional, and meticulously cited research report...",
             output_key="final_cited_report",
-            after_agent_callback=citation_replacement_callback,
         ),
     ],
 )
