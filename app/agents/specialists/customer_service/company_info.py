@@ -21,7 +21,7 @@ search_company_information = VertexAiRagRetrieval(
     description='Searches for general company information about TradieAI, including its services, contact details, and "about us" pages.',
     rag_resources=[
         rag.RagResource(
-            rag_corpus="projects/609773120808/locations/us-east4/ragCorpora/3379951520341557248"
+            rag_corpus="projects/tradieai-fullstack-production/locations/us-east4/ragCorpora/3379951520341557248"
         )
     ],
     similarity_top_k=10,
