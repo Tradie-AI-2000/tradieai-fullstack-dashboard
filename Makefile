@@ -35,3 +35,16 @@ setup-dev-env:
 test:
 	uv run pytest tests/unit && uv run pytest tests/integration
 
+
+# --- Commands from Agent Starter Pack ---
+
+data-ingestion:
+	(cd data_ingestion && uv run data_ingestion_pipeline/submit_pipeline.py \
+		--project-id="tradieai-fullstack-production" \
+		--region="us-central1" \
+		--data-store-id="tradieai-fullstack-v2-datastore" \
+		--data-store-region="us" \
+		--service-account="tradieai-fullstack-v2-rag@tradieai-fullstack-production.iam.gserviceaccount.com" \
+		--pipeline-root="gs://tradieai-fullstack-production-tradieai-fullstack-v2-rag" \
+		--pipeline-name="data-ingestion-pipeline")
+

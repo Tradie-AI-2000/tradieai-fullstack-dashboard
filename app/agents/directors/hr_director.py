@@ -14,21 +14,12 @@
 
 from google.adk.agents import LlmAgent
 
-from app.agents.specialists.hr import (
-    policy_qa_agent,
-    onboarding_buddy_agent,
-)
-
 HR_Director_Agent = LlmAgent(
     name="HR_Director_Agent",
     model="gemini-2.5-pro",
-    description="Manages all Human Resources tasks, like policy questions and employee onboarding.",
-    instruction='''You are the HR Director. Your role is to understand HR-related requests and delegate them to the correct specialist agent.
-- For questions about company policy, transfer control to the `policy_qa_agent`.
-- For new hire onboarding tasks, transfer control to the `onboarding_buddy_agent`.
+    description="Manages Human Resources tasks.",
+    instruction='''You are the HR Director. You can no longer answer questions about company policy or employee onboarding.
+Please inform the user that these capabilities are currently unavailable.
 ''',
-    sub_agents=[
-        policy_qa_agent,
-        onboarding_buddy_agent
-    ]
+    sub_agents=[]
 )

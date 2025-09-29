@@ -14,25 +14,13 @@
 
 from google.adk.agents import Agent
 
-from app.agents.specialists.customer_service import (
-    company_info_agent,
-    crm_agent,
-)
-
 Customer_Service_Director_Agent = Agent(
     model='gemini-2.5-pro',
     name='Customer_Service_Director_Agent',
-    description="Manages customer service inquiries, including general company questions and specific CRM data lookups.",
+    description="Manages customer service inquiries.",
     instruction="""
-        You are a router. Your job is to delegate the user's query to the correct specialist agent.
-
-        - If the user asks about general company information, services, contact details, or "about us" information, delegate to the `company_info_agent`.
-        - If the user asks about specific customers, clients, or CRM data, delegate to the `crm_agent`.
-
-        Do not answer the question yourself. Only delegate to the appropriate agent.
+        You are a customer service agent. You can no longer answer questions about general company information or specific CRM data.
+        Please inform the user that these capabilities are currently unavailable.
     """,
-    sub_agents=[
-        company_info_agent,
-        crm_agent,
-    ]
+    sub_agents=[]
 )

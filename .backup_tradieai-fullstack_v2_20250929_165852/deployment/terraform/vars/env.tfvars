@@ -1,0 +1,11 @@
+staging_project_id = "tradieai-fullstack-staging"
+prod_project_id = "tradieai-fullstack-production"
+cicd_runner_project_id = "tradieai-fullstack-production"
+region = "us-central1"
+repository_name = "tradieai-fullstack-dashboard"
+repository_owner = "Tradie-AI-2000"
+host_connection_name = "git-tradieai-fullstack-dashboard"
+create_cb_connection = true
+create_repository = false
+github_app_installation_id = "86084024"
+github_pat_secret_id = "git-tradieai-fullstack-dashboard-github-oauthtoken-7bcac8"

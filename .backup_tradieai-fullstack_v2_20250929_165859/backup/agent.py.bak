@@ -1,0 +1,494 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import datetime
+import logging
+import re
+import os
+import glob
+import csv
+from collections.abc import AsyncGenerator
+from typing import Literal
+
+from google.adk.agents import Agent, BaseAgent, LlmAgent, LoopAgent, SequentialAgent
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event, EventActions
+from google.adk.planners import BuiltInPlanner
+from google.adk.tools import google_search
+from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
+from google.genai import types as genai_types
+from pydantic import BaseModel, Field
+from vertexai.preview import rag
+from dotenv import load_dotenv
+
+from .config import config
+
+load_dotenv()
+
+# --- Structured Output Models ---
+class SearchQuery(BaseModel):
+    """Model representing a specific search query for web search."""
+
+    search_query: str = Field(
+        description="A highly specific and targeted query for web search."
+    )
+
+
+class Feedback(BaseModel):
+    """Model for providing evaluation feedback on research quality."""
+
+    grade: Literal["pass", "fail"] = Field(
+        description="Evaluation result. 'pass' if the research is sufficient, 'fail' if it needs revision."
+    )
+    comment: str = Field(
+        description="Detailed explanation of the evaluation, highlighting strengths and/or weaknesses of the research."
+    )
+    follow_up_queries: list[SearchQuery] | None = Field(
+        default=None,
+        description="A list of specific, targeted follow-up search queries needed to fix research gaps. This should be null or empty if the grade is 'pass'.",
+    )
+
+
+# --- Callbacks ---
+def collect_research_sources_callback(callback_context: CallbackContext) -> None:
+    """Collects and organizes web-based research sources and their supported claims from agent events."""
+    session = callback_context._invocation_context.session
+    url_to_short_id = callback_context.state.get("url_to_short_id", {})
+    sources = callback_context.state.get("sources", {})
+    id_counter = len(url_to_short_id) + 1
+    for event in session.events:
+        if not (event.grounding_metadata and event.grounding_metadata.grounding_chunks):
+            continue
+        chunks_info = {}
+        for idx, chunk in enumerate(event.grounding_metadata.grounding_chunks):
+            if not chunk.web:
+                continue
+            url = chunk.web.uri
+            title = (
+                chunk.web.title
+                if chunk.web.title != chunk.web.domain
+                else chunk.web.domain
+            )
+            if url not in url_to_short_id:
+                short_id = f"src-{id_counter}"
+                url_to_short_id[url] = short_id
+                sources[short_id] = {
+                    "short_id": short_id,
+                    "title": title,
+                    "url": url,
+                    "domain": chunk.web.domain,
+                    "supported_claims": [],
+                }
+                id_counter += 1
+            chunks_info[idx] = url_to_short_id[url]
+        if event.grounding_metadata.grounding_supports:
+            for support in event.grounding_metadata.grounding_supports:
+                confidence_scores = support.confidence_scores or []
+                chunk_indices = support.grounding_chunk_indices or []
+                for i, chunk_idx in enumerate(chunk_indices):
+                    if chunk_idx in chunks_info:
+                        short_id = chunks_info[chunk_idx]
+                        confidence = (
+                            confidence_scores[i] if i < len(confidence_scores) else 0.5
+                        )
+                        text_segment = support.segment.text if support.segment else ""
+                        sources[short_id]["supported_claims"].append(
+                            {
+                                "text_segment": text_segment,
+                                "confidence": confidence,
+                            }
+                        )
+    callback_context.state["url_to_short_id"] = url_to_short_id
+    callback_context.state["sources"] = sources
+
+
+def citation_replacement_callback(
+    callback_context: CallbackContext,
+) -> genai_types.Content:
+    """Replaces citation tags in a report with Markdown-formatted links."""
+    final_report = callback_context.state.get("final_cited_report", "")
+    sources = callback_context.state.get("sources", {})
+
+    def tag_replacer(match: re.Match) -> str:
+        short_id = match.group(1)
+        if not (source_info := sources.get(short_id)):
+            logging.warning(f"Invalid citation tag found and removed: {match.group(0)}")
+            return ""
+        display_text = source_info.get("title", source_info.get("domain", short_id))
+        return f" [{display_text}]({source_info['url']})"
+
+    processed_report = re.sub(
+        r'<cite\s+source\s*=\s*["\\]?\s*(src-\d+)\s*["\\]?\s*/>', 
+        tag_replacer,
+        final_report,
+    )
+    processed_report = re.sub(r"\s+([.,;:])", r"\1", processed_report)
+    callback_context.state["final_report_with_citations"] = processed_report
+    return genai_types.Content(parts=[genai_types.Part(text=processed_report)])
+
+
+# --- Custom Agent for Loop Control ---
+class EscalationChecker(BaseAgent):
+    """Checks research evaluation and escalates to stop the loop if grade is 'pass'."""
+
+    def __init__(self, name: str):
+        super().__init__(name=name)
+
+    async def _run_async_impl(
+        self,
+        ctx: InvocationContext,
+    ) -> AsyncGenerator[Event, None]:
+        evaluation_result = ctx.session.state.get("research_evaluation")
+        if evaluation_result and evaluation_result.get("grade") == "pass":
+            logging.info(
+                f"[{self.name}] Research evaluation passed. Escalating to stop loop."
+            )
+            yield Event(author=self.name, actions=EventActions(escalate=True))
+        else:
+            logging.info(
+                f"[{self.name}] Research evaluation failed or not found. Loop will continue."
+            )
+            yield Event(author=self.name)
+
+
+# --- AGENT DEFINITIONS ---
+
+# --- RAG Tools ---
+search_company_information = VertexAiRagRetrieval(
+    name='search_company_information',
+    description='Searches for general company information about TradieAI, including its services, contact details, and "about us" pages.',
+    rag_resources=[
+        rag.RagResource(
+            rag_corpus="projects/609773120808/locations/us-east4/ragCorpora/3379951520341557248"
+        )
+    ],
+    similarity_top_k=10,
+    vector_distance_threshold=0.6,
+)
+
+search_crm_customer_data = VertexAiRagRetrieval(
+    name='search_crm_customer_data',
+    description='Searches the CRM for specific customer data, like client names, contact info, and project status.',
+    rag_resources=[
+        rag.RagResource(
+            rag_corpus="projects/609773120808/locations/us-east4/ragCorpora/6838716034162098176"
+        )
+    ],
+    similarity_top_k=10,
+    vector_distance_threshold=0.6,
+)
+
+# --- Mock Tools for Finance and HR Agents ---
+def create_invoice(customer_name: str, amount: float) -> str:
+    """Creates a detailed invoice and saves it to a file."""
+    invoice_id = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{abs(hash(customer_name)) % 10000:04d}"
+    invoice_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    file_path = os.path.join("invoices", f"invoice_{invoice_id}.txt")
+
+    content = (
+        f"--- INVOICE ---\n\n"
+        f"Invoice ID: {invoice_id}\n"
+        f"Date: {invoice_date}\n\n"
+        f"Bill To:\n"
+        f"{customer_name}\n\n"
+        f"--------------------\n"
+        f"Description         Amount\n"
+        f"--------------------\n"
+        f"Consulting Services   ${amount:,.2f}\n"
+        f"--------------------\n"
+        f"TOTAL:              ${amount:,.2f}\n"
+    )
+
+    try:
+        with open(file_path, "w") as f:
+            f.write(content)
+        return f"Successfully created invoice. It is saved at: {file_path}"
+    except IOError as e:
+        return f"Error: Failed to save invoice to {file_path}. Reason: {e}"
+
+def get_expense_report(quarter: str) -> str:
+    """Reads the expenses.csv file and generates a summary for a given quarter."""
+    quarter_map = {
+        "Q1": ["01", "02", "03"],
+        "Q2": ["04", "05", "06"],
+        "Q3": ["07", "08", "09"],
+        "Q4": ["10", "11", "12"],
+    }
+    months_in_quarter = quarter_map.get(quarter.upper())
+    if not months_in_quarter:
+        return f"Invalid quarter: {quarter}. Please specify Q1, Q2, Q3, or Q4."
+
+    try:
+        total_expense = 0.0
+        category_expenses = {}
+        with open("expenses.csv", mode='r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                date_month = row["Date"].split('-')[1]
+                if date_month in months_in_quarter:
+                    amount = float(row["Amount"])
+                    category = row["Category"]
+                    total_expense += amount
+                    category_expenses[category] = category_expenses.get(category, 0) + amount
+
+        if total_expense == 0:
+            return f"No expenses found for {quarter}."
+
+        report = f"--- Expense Report for {quarter} ---\n"
+        report += f"Total Expenses: ${total_expense:,.2f}\n\n"
+        report += "Expenses by Category:\n"
+        for category, amount in sorted(category_expenses.items(), key=lambda item: item[1], reverse=True):
+            report += f"- {category}: ${amount:,.2f}\n"
+
+        return report
+
+    except FileNotFoundError:
+        return "Error: The expenses.csv file was not found."
+    except Exception as e:
+        return f"An error occurred while generating the expense report: {e}"
+
+def find_policy_document(policy_name: str) -> str:
+    """Searches for and retrieves the content of a company policy document."""
+    search_pattern = os.path.join("policies", f"*{policy_name.replace(' ', '_')}*.md")
+    found_files = glob.glob(search_pattern)
+
+    if not found_files:
+        return f"Could not find any policy document matching '{policy_name}'."
+
+    try:
+        with open(found_files[0], "r") as f:
+            return f.read()
+    except IOError as e:
+        return f"Error: Failed to read policy document {found_files[0]}. Reason: {e}"
+
+def get_onboarding_info(new_hire_name: str) -> str:
+    """Gets onboarding information for a new hire from a file."""
+    try:
+        with open("onboarding/new_hire_guide.md", "r") as f:
+            guide_content = f.read()
+        return f"Welcome, {new_hire_name}! Here is some information to get you started:\n\n{guide_content}"
+    except FileNotFoundError:
+        return "Error: The new_hire_guide.md file was not found."
+    except Exception as e:
+        return f"An error occurred while fetching onboarding information: {e}"
+
+
+# --- Level 3: Specialist "Worker" Agents ---
+
+# Marketing Department Specialists
+research_agent = LlmAgent(
+    name="research_agent",
+    model=config.worker_model,
+    description="A specialist agent that performs deep, multi-step research on a given topic and returns a comprehensive report.",
+    instruction=f"""
+    You are a specialist research agent, activated by your director to handle a research task.
+    Your job is to use a research pipeline to generate a comprehensive report.
+    """,
+    sub_agents=[
+        SequentialAgent(
+            name="research_pipeline",
+            sub_agents=[
+                LlmAgent(
+                    model=config.worker_model,
+                    name="plan_generator",
+                    description="Generates or refines a multi-step research plan.",
+                    tools=[google_search],
+                ),
+                LlmAgent(
+                    model=config.worker_model,
+                    name="section_planner",
+                    instruction="You are an expert report architect...",
+                    output_key="report_sections",
+                ),
+                LlmAgent(
+                    model=config.worker_model,
+                    name="section_researcher",
+                    instruction="You are a highly capable research and synthesis agent...",
+                    tools=[google_search],
+                    output_key="section_research_findings",
+                    after_agent_callback=collect_research_sources_callback,
+                ),
+                LoopAgent(
+                    name="iterative_refinement_loop",
+                    max_iterations=config.max_search_iterations,
+                    sub_agents=[
+                        LlmAgent(
+                            model=config.critic_model,
+                            name="research_evaluator",
+                            instruction="You are a meticulous quality assurance analyst...", 
+                            output_schema=Feedback,
+                            output_key="research_evaluation",
+                        ),
+                        EscalationChecker(name="escalation_checker"),
+                        LlmAgent(
+                            model=config.worker_model,
+                            name="enhanced_search_executor",
+                            instruction="You are a specialist researcher executing a refinement pass...",
+                            tools=[google_search],
+                            output_key="section_research_findings",
+                            after_agent_callback=collect_research_sources_callback,
+                        ),
+                    ],
+                ),
+                LlmAgent(
+                    model=config.critic_model,
+                    name="report_composer_with_citations",
+                    instruction="Transform the provided data into a polished, professional, and meticulously cited research report...",
+                    output_key="final_cited_report",
+                    after_agent_callback=citation_replacement_callback,
+                ),
+            ],
+        )
+    ]
+)
+
+# Finance Department Specialists
+invoice_creator_agent = LlmAgent(
+    name="invoice_creator_agent",
+    model="gemini-2.5-flash",
+    description="Use this agent to create a new invoice for a customer.",
+    instruction="Use the `create_invoice` tool to generate an invoice for the specified customer and amount.",
+    tools=[create_invoice]
+)
+
+expense_reporter_agent = LlmAgent(
+    name="expense_reporter_agent",
+    model="gemini-2.5-flash",
+    description="Use this agent to get a summary report of business expenses for a specific quarter.",
+    instruction="Use the `get_expense_report` tool to fetch the expense report for the requested quarter.",
+    tools=[get_expense_report]
+)
+
+# HR Department Specialists
+policy_qa_agent = LlmAgent(
+    name="policy_qa_agent",
+    model="gemini-2.5-flash",
+    description="Use this agent to answer questions about company policies.",
+    instruction="Use the `find_policy_document` tool to find the relevant policy document and answer the user's question.",
+    tools=[find_policy_document]
+)
+
+onboarding_buddy_agent = LlmAgent(
+    name="onboarding_buddy_agent",
+    model="gemini-2.5-flash",
+    description="Use this agent to get onboarding information for new employees.",
+    instruction="Use the `get_onboarding_info` tool to provide onboarding information for the new hire.",
+    tools=[get_onboarding_info]
+)
+
+# Customer Service Department Specialists
+company_info_agent = Agent(
+    model='gemini-2.5-flash',
+    name='company_info_agent',
+    description='Handles questions about general company information, services, and contact details.',
+    instruction='You are an expert on TradieAI company information. Use your tool to answer questions about services, contact details, and "about us" information.',
+    tools=[search_company_information],
+)
+
+crm_agent = Agent(
+    model='gemini-2.5-flash',
+    name='crm_agent',
+    description='Handles questions about CRM data and specific customers.',
+    instruction='You are an expert on TradieAI\'s CRM data. Use your tool to answer questions about specific customers and their data.',
+    tools=[search_crm_customer_data],
+)
+
+
+# --- Level 2: Orchestrator "Director" Agents ---
+
+Marketing_Director_Agent = LlmAgent(
+    name="Marketing_Director_Agent",
+    model="gemini-2.5-pro",
+    description="Manages all marketing-related tasks, including market research and campaign planning.",
+    instruction='''You are the Marketing Director. Your role is to understand marketing-related requests and delegate them to the correct specialist agent.
+- For any requests involving research, analysis, or report generation, you must transfer control to the `research_agent`.
+''',
+    sub_agents=[research_agent]
+)
+
+Finance_Director_Agent = LlmAgent(
+    name="Finance_Director_Agent",
+    model="gemini-2.5-pro",
+    description="Manages all finance-related tasks, such as invoicing and expense reporting.",
+    instruction='''You are the Finance Director. Your role is to understand finance-related requests and delegate them to the correct specialist agent.
+- For creating invoices, transfer control to the `invoice_creator_agent`.
+- For expense reports, transfer control to the `expense_reporter_agent`.
+''',
+    sub_agents=[
+        invoice_creator_agent,
+        expense_reporter_agent
+    ]
+)
+
+HR_Director_Agent = LlmAgent(
+    name="HR_Director_Agent",
+    model="gemini-2.5-pro",
+    description="Manages all Human Resources tasks, like policy questions and employee onboarding.",
+    instruction='''You are the HR Director. Your role is to understand HR-related requests and delegate them to the correct specialist agent.
+- For questions about company policy, transfer control to the `policy_qa_agent`.
+- For new hire onboarding tasks, transfer control to the `onboarding_buddy_agent`.
+''',
+    sub_agents=[
+        policy_qa_agent,
+        onboarding_buddy_agent
+    ]
+)
+
+Customer_Service_Director_Agent = Agent(
+    model='gemini-2.5-pro',
+    name='Customer_Service_Director_Agent',
+    description="Manages customer service inquiries, including general company questions and specific CRM data lookups.",
+    instruction="""
+        You are a router. Your job is to delegate the user's query to the correct specialist agent.
+
+        - If the user asks about general company information, services, contact details, or "about us" information, delegate to the `company_info_agent`.
+        - If the user asks about specific customers, clients, or CRM data, delegate to the `crm_agent`.
+
+        Do not answer the question yourself. Only delegate to the appropriate agent.
+    """,
+    sub_agents=[
+        company_info_agent,
+        crm_agent,
+    ]
+)
+
+
+# --- Level 1: The Root Orchestrator Agent ---
+
+main_coordinator_agent = LlmAgent(
+    name="main_coordinator_agent",
+    model="gemini-2.5-pro",
+    description="The main coordinator for the entire agent system. It delegates tasks to the appropriate director-level agent.",
+    instruction='''You are the main coordinator of a company. Your ONLY job is to understand the user\'s request and delegate the entire task by transferring control to the single most appropriate Director agent.
+
+- For any marketing, research, or analysis tasks, transfer control to the `Marketing_Director_Agent`.
+- For any finance, invoice, or expense tasks, transfer control to the `Finance_Director_Agent`.
+- For any HR, policy, or onboarding tasks, transfer control to the `HR_Director_Agent`.
+- For any customer service, company info, or CRM questions, transfer control to the `Customer_Service_Director_Agent`.
+
+If the request is ambiguous, ask for clarification. Do not perform any other actions.
+''',
+    sub_agents=[
+        Marketing_Director_Agent,
+        Finance_Director_Agent,
+        HR_Director_Agent,
+        Customer_Service_Director_Agent
+    ]
+)
+
+
+# The root_agent is the entry point to the entire system.
+root_agent = main_coordinator_agent

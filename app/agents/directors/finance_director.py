@@ -16,19 +16,16 @@ from google.adk.agents import LlmAgent
 
 from app.agents.specialists.finance import (
     invoice_creator_agent,
-    expense_reporter_agent,
 )
 
 Finance_Director_Agent = LlmAgent(
     name="Finance_Director_Agent",
     model="gemini-2.5-pro",
-    description="Manages all finance-related tasks, such as invoicing and expense reporting.",
+    description="Manages all finance-related tasks, such as invoicing.",
     instruction='''You are the Finance Director. Your role is to understand finance-related requests and delegate them to the correct specialist agent.
 - For creating invoices, transfer control to the `invoice_creator_agent`.
-- For expense reports, transfer control to the `expense_reporter_agent`.
 ''',
     sub_agents=[
-        invoice_creator_agent,
-        expense_reporter_agent
+        invoice_creator_agent
     ]
 )

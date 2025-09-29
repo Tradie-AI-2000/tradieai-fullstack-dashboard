@@ -1,4 +1,4 @@
-# tradieai-fullstack
+# tradieai-fullstack-v2
 
 A production-ready fullstack research agent that uses Gemini to strategize, research, and synthesize comprehensive reports with human-in-the-loop collaboration
 Agent generated with [`googleCloudPlatform/agent-starter-pack`](https://github.com/GoogleCloudPlatform/agent-starter-pack) version `0.14.1`
@@ -8,7 +8,7 @@ Agent generated with [`googleCloudPlatform/agent-starter-pack`](https://github.c
 This project is organized as follows:
 
 ```
-tradieai-fullstack/
+tradieai-fullstack-v2/
 ├── app/                 # Core application code
 │   ├── agent.py         # Main agent logic
 │   ├── agent_engine_app.py # Agent Engine application logic
@@ -49,6 +49,7 @@ make install && make playground
 | `make test`          | Run unit and integration tests                                                              |
 | `make lint`          | Run code quality checks (codespell, ruff, mypy)                                             |
 | `make setup-dev-env` | Set up development environment resources using Terraform                         |
+| `make data-ingestion`| Run data ingestion pipeline in the Dev environment                                           |
 | `uv run jupyter lab` | Launch Jupyter notebook                                                                     |
 
 For full command options and usage, refer to the [Makefile](Makefile).

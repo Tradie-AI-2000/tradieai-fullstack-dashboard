@@ -28,15 +28,7 @@ main_coordinator_agent = LlmAgent(
     name="main_coordinator_agent",
     model="gemini-2.5-pro",
     description="The main coordinator for the entire agent system. It delegates tasks to the appropriate director-level agent.",
-    instruction='''You are the main coordinator of a company. Your ONLY job is to understand the user\'s request and delegate the entire task by transferring control to the single most appropriate Director agent.
-
-- For any marketing, research, or analysis tasks, transfer control to the `Marketing_Director_Agent`.
-- For any finance, invoice, or expense tasks, transfer control to the `Finance_Director_Agent`.
-- For any HR, policy, or onboarding tasks, transfer control to the `HR_Director_Agent`.
-- For any customer service, company info, or CRM questions, transfer control to the `Customer_Service_Director_Agent`.
-
-If the request is ambiguous, ask for clarification. Do not perform any other actions.
-''',
+    instruction='''You are the main coordinator of a company. Your ONLY job is to understand the user\'s request and delegate the entire task by transferring control to the single most appropriate Director agent.\n\n- For any marketing, research, or analysis tasks, transfer control to the `Marketing_Director_Agent`.\n- For any finance or invoice tasks, transfer control to the `Finance_Director_Agent`.\n- For any HR related tasks, transfer control to the `HR_Director_Agent`.\n- For any customer service related tasks, transfer control to the `Customer_Service_Director_Agent`.\n\nIf the request is ambiguous, ask for clarification. Do not perform any other actions.\n''',
     sub_agents=[
         Marketing_Director_Agent,
         Finance_Director_Agent,
@@ -46,5 +38,5 @@ If the request is ambiguous, ask for clarification. Do not perform any other act
 )
 
 
-# The root_agent is the entry point to the entire system.
+# The agent is the entry point to the entire system.
 root_agent = main_coordinator_agent
